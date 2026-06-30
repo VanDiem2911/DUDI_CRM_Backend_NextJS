@@ -5,9 +5,11 @@ const http = require('http');
 // Đọc PORT công khai của Render TRƯỚC khi ghi đè
 const PUBLIC_PORT = parseInt(process.env.PORT || '10000', 10);
 const INTERNAL_PORT = 3001;
+const INTERNAL_HOST = '127.0.0.1';
 
-// Override PORT để Next.js bind vào cổng nội bộ
+// Override PORT/HOSTNAME để Next.js bind vào cổng nội bộ có thể proxy được
 process.env.PORT = String(INTERNAL_PORT);
+process.env.HOSTNAME = '0.0.0.0';
 
 // Khởi động Next.js standalone
 require('./server.js');
@@ -37,7 +39,7 @@ function setCorsHeaders(req, res) {
 // Poll cho đến khi Next.js thực sự sẵn sàng trả về HTTP response
 function waitForNextJs(retries, callback) {
   const req = http.request(
-    { hostname: '127.0.0.1', port: INTERNAL_PORT, path: '/', method: 'GET' },
+    { hostname: INTERNAL_HOST, port: INTERNAL_PORT, path: '/', method: 'GET' },
     (res) => {
       res.resume(); // Drain body
       console.log(`>>> Next.js sẵn sàng trên :${INTERNAL_PORT} (HTTP ${res.statusCode})`);
@@ -77,7 +79,7 @@ waitForNextJs(90, () => {
     // Đọc toàn bộ body trước (để có thể log lỗi đầy đủ)
     const proxyReq = http.request(
       {
-        hostname: '127.0.0.1',
+        hostname: INTERNAL_HOST,
         port: INTERNAL_PORT,
         path: req.url,
         method: req.method,
