@@ -1,23 +1,43 @@
 import { NextResponse } from 'next/server';
 
-const CORS_HEADERS = {
-  'Access-Control-Allow-Credentials': 'true',
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET,DELETE,PATCH,POST,PUT,OPTIONS',
-  'Access-Control-Allow-Headers':
-    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization',
-};
+// Đọc origin được phép từ env var, fallback về * nếu chưa cấu hình
+const ALLOWED_ORIGIN = process.env.CORS_ALLOWED_ORIGINS || '*';
+
+function setCorsHeaders(response, origin) {
+  // Nếu cấu hình cụ thể, reflect đúng origin của request (nếu khớp)
+  if (ALLOWED_ORIGIN !== '*') {
+    const allowedList = ALLOWED_ORIGIN.split(',').map(o => o.trim());
+    response.headers.set(
+      'Access-Control-Allow-Origin',
+      allowedList.includes(origin) ? origin : allowedList[0]
+    );
+  } else {
+    response.headers.set('Access-Control-Allow-Origin', '*');
+  }
+
+  response.headers.set('Access-Control-Allow-Methods', 'GET,DELETE,PATCH,POST,PUT,OPTIONS');
+  response.headers.set(
+    'Access-Control-Allow-Headers',
+    'X-Requested-With, Accept, Content-Type, Authorization'
+  );
+  // Vary header giúp CDN cache đúng cách khi dùng specific origin
+  if (ALLOWED_ORIGIN !== '*') {
+    response.headers.set('Vary', 'Origin');
+  }
+}
 
 export function proxy(request) {
-  // Trả về ngay cho OPTIONS preflight mà không cần xử lý thêm
+  const origin = request.headers.get('origin') || '';
+
+  // Phản hồi ngay preflight OPTIONS — không chuyển tiếp lên route handler
   if (request.method === 'OPTIONS') {
-    return new NextResponse(null, { status: 204, headers: CORS_HEADERS });
+    const response = new NextResponse(null, { status: 204 });
+    setCorsHeaders(response, origin);
+    return response;
   }
 
   const response = NextResponse.next();
-  Object.entries(CORS_HEADERS).forEach(([key, value]) => {
-    response.headers.set(key, value);
-  });
+  setCorsHeaders(response, origin);
   return response;
 }
 
