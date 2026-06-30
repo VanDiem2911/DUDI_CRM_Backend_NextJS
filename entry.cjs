@@ -4,63 +4,77 @@ const http = require('http');
 
 // Đọc PORT công khai của Render TRƯỚC khi ghi đè
 const PUBLIC_PORT = parseInt(process.env.PORT || '10000', 10);
-
-// Next.js standalone chạy trên port nội bộ (không expose ra ngoài)
 const INTERNAL_PORT = 3001;
+
+// Override PORT để Next.js bind vào cổng nội bộ
 process.env.PORT = String(INTERNAL_PORT);
 
-// Khởi động Next.js standalone server trên port nội bộ
+// Khởi động Next.js standalone
 require('./server.js');
 
-// Origin được phép (đọc từ env var của Render)
+// CORS – đọc origin được phép từ env var của Render
 const ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS || '')
   .split(',')
   .map(o => o.trim())
   .filter(Boolean);
 
-function addCorsHeaders(req, res) {
+function setCorsHeaders(req, res) {
   const origin = req.headers.origin || '';
-  const allowedOrigin =
-    ALLOWED_ORIGINS.length === 0
-      ? '*'
-      : ALLOWED_ORIGINS.includes(origin)
+  let allowedOrigin = '*';
+
+  if (ALLOWED_ORIGINS.length > 0) {
+    allowedOrigin = ALLOWED_ORIGINS.includes(origin)
       ? origin
       : ALLOWED_ORIGINS[0];
+    res.setHeader('Vary', 'Origin');
+  }
 
   res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'X-Requested-With, Accept, Content-Type, Authorization');
-  if (ALLOWED_ORIGINS.length > 0) {
-    res.setHeader('Vary', 'Origin');
-  }
 }
 
-// Chờ Next.js sẵn sàng trước khi mở proxy
+// Poll cho đến khi Next.js thực sự sẵn sàng trả về HTTP response
 function waitForNextJs(retries, callback) {
-  const req = http.request({ hostname: '127.0.0.1', port: INTERNAL_PORT, path: '/api/health' }, () => callback());
+  const req = http.request(
+    { hostname: '127.0.0.1', port: INTERNAL_PORT, path: '/', method: 'GET' },
+    (res) => {
+      res.resume(); // Drain body
+      console.log(`>>> Next.js sẵn sàng trên :${INTERNAL_PORT} (HTTP ${res.statusCode})`);
+      callback();
+    }
+  );
+
+  req.setTimeout(3000, () => {
+    req.destroy();
+  });
+
   req.on('error', () => {
     if (retries > 0) {
-      setTimeout(() => waitForNextJs(retries - 1, callback), 1000);
+      setTimeout(() => waitForNextJs(retries - 1, callback), 2000);
     } else {
-      // Nếu không có /api/health thì Next.js vẫn đang chạy, cứ mở proxy
+      // Vẫn mở proxy sau khi hết thời gian chờ
+      console.log('>>> Hết thời gian chờ Next.js, mở proxy...');
       callback();
     }
   });
+
   req.end();
 }
 
-setTimeout(() => {
+// Chờ Next.js (tối đa 90 × 2s = 180s), sau đó mới mở CORS proxy
+waitForNextJs(90, () => {
   const proxy = http.createServer((req, res) => {
-    addCorsHeaders(req, res);
+    setCorsHeaders(req, res);
 
-    // Phản hồi OPTIONS preflight ngay lập tức
+    // Phản hồi OPTIONS preflight ngay lập tức – không chuyển tiếp
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
       return;
     }
 
-    // Chuyển tiếp request sang Next.js
+    // Đọc toàn bộ body trước (để có thể log lỗi đầy đủ)
     const proxyReq = http.request(
       {
         hostname: '127.0.0.1',
@@ -70,14 +84,13 @@ setTimeout(() => {
         headers: req.headers,
       },
       (proxyRes) => {
-        // Giữ lại response headers từ Next.js nhưng đảm bảo CORS headers luôn có
         res.writeHead(proxyRes.statusCode, proxyRes.headers);
         proxyRes.pipe(res, { end: true });
       }
     );
 
     proxyReq.on('error', (err) => {
-      console.error('Proxy request error:', err.message);
+      console.error('Proxy forward error:', err.message);
       if (!res.headersSent) {
         res.writeHead(502);
         res.end('Bad Gateway');
@@ -88,7 +101,6 @@ setTimeout(() => {
   });
 
   proxy.listen(PUBLIC_PORT, () => {
-    console.log(`>>> CORS Proxy đang lắng nghe trên :${PUBLIC_PORT}`);
-    console.log(`>>> Next.js đang chạy nội bộ trên :${INTERNAL_PORT}`);
+    console.log(`>>> CORS Proxy đang lắng nghe trên :${PUBLIC_PORT} → Next.js :${INTERNAL_PORT}`);
   });
-}, 8000); // Chờ 8 giây để Next.js khởi động xong
+});
