@@ -70,6 +70,8 @@ export async function POST(request) {
     let successCount = 0;
     let failedCount = 0;
     const errors = [];
+    const validRecords = [];
+    const rowPhones = new Set();
 
     const startRowIndex = hasHeader ? 1 : 0;
     for (let rNum = startRowIndex; rNum < rows.length; rNum++) {
@@ -107,17 +109,19 @@ export async function POST(request) {
         continue;
       }
 
-      if (phone) {
-        const phoneExists = await DataRecord.exists({ phone });
-        if (phoneExists) {
-          failedCount++;
-          errors.push({ row: rNum + 1, message: 'Số điện thoại đã tồn tại' });
-          continue;
-        }
+      if (phone && rowPhones.has(phone)) {
+        failedCount++;
+        errors.push({ row: rNum + 1, message: 'So dien thoai da ton tai' });
+        continue;
       }
 
-      try {
-        const record = new DataRecord({
+      if (phone) {
+        rowPhones.add(phone);
+      }
+
+      validRecords.push({
+        row: rNum + 1,
+        data: {
           businessName,
           address,
           area,
@@ -126,17 +130,41 @@ export async function POST(request) {
           businessType,
           googleMapUrl,
           note,
-          status: 'Chưa xử lý',
+          status: 'Ch\u01b0a x\u1eed l\u00fd',
           assignedTo: null,
           assignedToName: null,
           createdBy: user._id.toString()
-        });
+        }
+      });
+    }
 
-        await record.save();
-        successCount++;
-      } catch (err) {
+    const existingPhones = rowPhones.size > 0
+      ? new Set(
+          (await DataRecord.find({ phone: { $in: Array.from(rowPhones) } }).select('phone').lean())
+            .map(record => record.phone)
+        )
+      : new Set();
+
+    const recordsToInsert = [];
+    for (const record of validRecords) {
+      if (record.data.phone && existingPhones.has(record.data.phone)) {
         failedCount++;
-        errors.push({ row: rNum + 1, message: 'Lỗi lưu database: ' + err.message });
+        errors.push({ row: record.row, message: 'So dien thoai da ton tai' });
+        continue;
+      }
+
+      recordsToInsert.push(record.data);
+    }
+
+    if (recordsToInsert.length > 0) {
+      try {
+        const insertedRecords = await DataRecord.insertMany(recordsToInsert, { ordered: false });
+        successCount = insertedRecords.length;
+      } catch (err) {
+        const insertedCount = err.insertedDocs?.length || 0;
+        successCount = insertedCount;
+        failedCount += recordsToInsert.length - insertedCount;
+        errors.push({ row: null, message: 'Loi luu database: ' + err.message });
       }
     }
 

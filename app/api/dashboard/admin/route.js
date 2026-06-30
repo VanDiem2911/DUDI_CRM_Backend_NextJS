@@ -18,68 +18,75 @@ export async function GET(request) {
       return NextResponse.json({ message: 'Lỗi: Bạn không có quyền truy cập.' }, { status: 403 });
     }
 
-    const allRecords = await DataRecord.find({});
-    const employees = await User.find({ role: 'ROLE_EMPLOYEE' });
-
-    let unassigned = 0;
-    let assigned = 0;
-    let processing = 0;
-    let completed = 0;
+    const [
+      totalData,
+      unassigned,
+      employees,
+      statusGroups,
+      employeeGroups
+    ] = await Promise.all([
+      DataRecord.countDocuments(),
+      DataRecord.countDocuments({ $or: [{ assignedTo: null }, { assignedTo: '' }] }),
+      User.find({ role: 'ROLE_EMPLOYEE' }).select('_id fullName').lean(),
+      DataRecord.aggregate([
+        {
+          $group: {
+            _id: {
+              $cond: [
+                { $or: [{ $eq: ['$status', null] }, { $eq: ['$status', ''] }] },
+                STATUSES[0],
+                '$status'
+              ]
+            },
+            count: { $sum: 1 }
+          }
+        }
+      ]),
+      DataRecord.aggregate([
+        { $match: { assignedTo: { $nin: [null, ''] } } },
+        {
+          $group: {
+            _id: '$assignedTo',
+            totalAssigned: { $sum: 1 },
+            completedCount: {
+              $sum: { $cond: [{ $eq: ['$status', STATUSES[4]] }, 1, 0] }
+            },
+            processingCount: {
+              $sum: { $cond: [{ $eq: ['$status', STATUSES[2]] }, 1, 0] }
+            }
+          }
+        }
+      ])
+    ]);
 
     const statusCounts = {};
     for (const status of STATUSES) {
       statusCounts[status] = 0;
     }
-
-    for (const record of allRecords) {
-      if (!record.assignedTo || !record.assignedTo.trim()) {
-        unassigned++;
-      } else {
-        assigned++;
-      }
-
-      let status = record.status;
-      if (!status || !status.trim()) {
-        status = 'Chưa xử lý';
-      }
-      statusCounts[status] = (statusCounts[status] || 0) + 1;
-
-      if (status === 'Đã gửi tin nhắn') {
-        processing++;
-      } else if (status === 'Trả lời') {
-        completed++;
-      }
+    for (const group of statusGroups) {
+      statusCounts[group._id] = group.count;
     }
 
-    const employeeProgress = [];
-    for (const emp of employees) {
+    const employeeStats = new Map(employeeGroups.map(group => [String(group._id), group]));
+    const employeeProgress = employees.map((emp) => {
       const empId = emp._id.toString();
-      let empTotal = 0;
-      let empCompleted = 0;
-      let empProcessing = 0;
+      const stats = employeeStats.get(empId);
 
-      for (const record of allRecords) {
-        if (record.assignedTo === empId) {
-          empTotal++;
-          if (record.status === 'Trả lời') {
-            empCompleted++;
-          } else if (record.status === 'Đã gửi tin nhắn') {
-            empProcessing++;
-          }
-        }
-      }
-
-      employeeProgress.push({
+      return {
         employeeId: emp._id,
         employeeName: emp.fullName,
-        totalAssigned: empTotal,
-        completedCount: empCompleted,
-        processingCount: empProcessing,
-      });
-    }
+        totalAssigned: stats?.totalAssigned || 0,
+        completedCount: stats?.completedCount || 0,
+        processingCount: stats?.processingCount || 0,
+      };
+    });
+
+    const assigned = totalData - unassigned;
+    const processing = statusCounts[STATUSES[2]] || 0;
+    const completed = statusCounts[STATUSES[4]] || 0;
 
     return NextResponse.json({
-      totalData: allRecords.length,
+      totalData,
       totalEmployees: employees.length,
       unassignedData: unassigned,
       assignedData: assigned,

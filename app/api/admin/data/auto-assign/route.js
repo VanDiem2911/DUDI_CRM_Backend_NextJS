@@ -17,12 +17,11 @@ export async function POST(request) {
     }
 
     // 1. Find all active employees in "marketing" department
-    const allEmployees = await User.find({ role: 'ROLE_EMPLOYEE' });
-    const targetEmployees = allEmployees.filter(emp => {
-      if (!emp.active) return false;
-      if (!emp.department) return false;
-      return emp.department.trim().toLowerCase().includes('marketing');
-    });
+    const targetEmployees = await User.find({
+      role: 'ROLE_EMPLOYEE',
+      active: true,
+      department: { $regex: 'marketing', $options: 'i' }
+    }).select('_id fullName').lean();
 
     if (targetEmployees.length === 0) {
       return NextResponse.json(
@@ -37,7 +36,7 @@ export async function POST(request) {
         { assignedTo: null },
         { assignedTo: '' }
       ]
-    });
+    }).select('_id').lean();
 
     const totalUnassigned = unassignedRecords.length;
     const totalEmployeesAssigned = targetEmployees.length;
@@ -49,18 +48,29 @@ export async function POST(request) {
     }
 
     if (totalUnassigned > 0) {
+      const operations = [];
       for (let i = 0; i < unassignedRecords.length; i++) {
         const record = unassignedRecords[i];
         const employee = targetEmployees[i % totalEmployeesAssigned];
         const empIdStr = employee._id.toString();
 
-        record.assignedTo = empIdStr;
-        record.assignedToName = employee.fullName;
-        await record.save();
+        operations.push({
+          updateOne: {
+            filter: { _id: record._id },
+            update: {
+              $set: {
+                assignedTo: empIdStr,
+                assignedToName: employee.fullName
+              }
+            }
+          }
+        });
 
         countsMap[empIdStr] = (countsMap[empIdStr] || 0) + 1;
         assignedCount++;
       }
+
+      await DataRecord.bulkWrite(operations, { ordered: false });
     }
 
     const resultList = targetEmployees.map(emp => {

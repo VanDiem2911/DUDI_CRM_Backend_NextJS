@@ -52,14 +52,17 @@ export async function GET(request) {
       ];
     }
 
-    const total = await DataRecord.countDocuments(query);
-    const records = await DataRecord.find(query)
-      .sort({ createdAt: -1 })
-      .skip(page * size)
-      .limit(size);
+    const [total, records] = await Promise.all([
+      DataRecord.countDocuments(query),
+      DataRecord.find(query)
+        .sort({ createdAt: -1 })
+        .skip(page * size)
+        .limit(size)
+        .lean()
+    ]);
 
     return NextResponse.json({
-      content: records,
+      content: records.map(record => ({ ...record, id: record._id })),
       totalElements: total,
       totalPages: Math.ceil(total / size),
       number: page,

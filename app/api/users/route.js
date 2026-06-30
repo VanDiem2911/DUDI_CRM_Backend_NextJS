@@ -18,13 +18,23 @@ export async function GET(request) {
       return NextResponse.json({ message: 'Lỗi: Bạn không có quyền truy cập.' }, { status: 403 });
     }
 
-    const employees = await User.find({ role: 'ROLE_EMPLOYEE' });
-    const dtos = [];
+    const employees = await User.find({ role: 'ROLE_EMPLOYEE' }).lean();
+    const employeeIds = employees.map(emp => emp._id.toString());
 
-    for (const emp of employees) {
+    const [assignedCounts, profiles] = await Promise.all([
+      DataRecord.aggregate([
+        { $match: { assignedTo: { $in: employeeIds } } },
+        { $group: { _id: '$assignedTo', count: { $sum: 1 } } }
+      ]),
+      EmployeeProfile.find({ employeeId: { $in: employeeIds } }).lean()
+    ]);
+
+    const countByEmployeeId = new Map(assignedCounts.map(item => [String(item._id), item.count]));
+    const profileByEmployeeId = new Map(profiles.map(profile => [String(profile.employeeId), profile]));
+
+    const dtos = employees.map((emp) => {
       const empIdStr = emp._id.toString();
-      const count = await DataRecord.countDocuments({ assignedTo: empIdStr });
-      const profile = await EmployeeProfile.findOne({ employeeId: empIdStr });
+      const profile = profileByEmployeeId.get(empIdStr);
 
       const dto = {
         id: emp._id,
@@ -38,7 +48,7 @@ export async function GET(request) {
         department: emp.department,
         createdAt: emp.createdAt,
         updatedAt: emp.updatedAt,
-        assignedDataCount: count,
+        assignedDataCount: countByEmployeeId.get(empIdStr) || 0,
         profile: profile || null
       };
 
@@ -52,8 +62,8 @@ export async function GET(request) {
         dto.avatarUrl = profile.avatarUrl;
       }
 
-      dtos.push(dto);
-    }
+      return dto;
+    });
 
     return NextResponse.json(dtos);
   } catch (error) {

@@ -18,35 +18,37 @@ export async function GET(request) {
     }
 
     const employeeId = user._id.toString();
-    const empRecords = await DataRecord.find({ assignedTo: employeeId });
-
-    let untreated = 0;
-    let processing = 0;
-    let completed = 0;
+    const statusGroups = await DataRecord.aggregate([
+      { $match: { assignedTo: employeeId } },
+      {
+        $group: {
+          _id: {
+            $cond: [
+              { $or: [{ $eq: ['$status', null] }, { $eq: ['$status', ''] }] },
+              STATUSES[0],
+              '$status'
+            ]
+          },
+          count: { $sum: 1 }
+        }
+      }
+    ]);
 
     const statusCounts = {};
     for (const status of STATUSES) {
       statusCounts[status] = 0;
     }
-
-    for (const record of empRecords) {
-      let status = record.status;
-      if (!status || !status.trim()) {
-        status = 'Chưa xử lý';
-      }
-      statusCounts[status] = (statusCounts[status] || 0) + 1;
-
-      if (status === 'Chưa xử lý') {
-        untreated++;
-      } else if (status === 'Đã gửi tin nhắn') {
-        processing++;
-      } else if (status === 'Trả lời') {
-        completed++;
-      }
+    for (const group of statusGroups) {
+      statusCounts[group._id] = group.count;
     }
 
+    const totalAssigned = statusGroups.reduce((sum, group) => sum + group.count, 0);
+    const untreated = statusCounts[STATUSES[0]] || 0;
+    const processing = statusCounts[STATUSES[2]] || 0;
+    const completed = statusCounts[STATUSES[4]] || 0;
+
     return NextResponse.json({
-      totalAssigned: empRecords.length,
+      totalAssigned,
       untreatedCount: untreated,
       processingCount: processing,
       completedCount: completed,
